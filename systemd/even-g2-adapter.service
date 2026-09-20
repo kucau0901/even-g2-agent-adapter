@@ -1,0 +1,29 @@
+# even-g2-agent-adapter (Linux, systemd user unit)
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/even-g2-adapter.service ~/.config/systemd/user/
+#   $EDITOR ~/.config/systemd/user/even-g2-adapter.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now even-g2-adapter
+#
+# Adjust ExecStart to where you cloned the repo, and UPSTREAM_URL to your backend.
+# For it to keep running while you are logged out: sudo loginctl enable-linger $USER
+
+[Unit]
+Description=Even Realities G2 agent adapter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/even-g2-agent-adapter/glasses_adapter.py
+Environment=ADAPTER_PORT=8646
+Environment=UPSTREAM_URL=http://127.0.0.1:8642/v1/chat/completions
+Environment=CHAR_BUDGET=350
+Environment=ADAPTER_LOG=%h/.local/share/even-g2-adapter/glasses-adapter.log
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
