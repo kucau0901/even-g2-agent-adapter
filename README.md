@@ -176,7 +176,7 @@ very steeply. All figures below were measured end-to-end on real hardware.
 | Agent | General knowledge | House state & control | Typical latency |
 |---|---|---|---|
 | Home Assistant **local Assist** (`conversation.home_assistant`) | ✗ | ✓ | **0.03 – 0.08 s** |
-| Home Assistant + **LLM conversation entity** (`conversation.openai_conversation`) | ✓ | ✓ | **2.7 – 5.8 s** |
+| Home Assistant + an **LLM conversation entity** (whatever yours is called — see below) | ✓ | ✓ | **2.7 – 5.8 s** |
 | A full **agentic backend** (Hermes, and similar tool-using agents) | ✓ | ✓ (via its own tools) | **3 – 19 s** |
 
 Local Assist is intent matching, not inference — it answers "is the front door
@@ -184,9 +184,10 @@ locked" in under a tenth of a second, but it genuinely cannot tell you the capit
 of France:
 
 ```
-conversation.home_assistant   "what is the capital of France"
+# measured on one install; your LLM entity will have a different name
+conversation.home_assistant       "what is the capital of France"
   -> "Sorry, I am not aware of any device called capital of France"
-conversation.openai_conversation "what is the capital of France"
+conversation.openai_conversation  "what is the capital of France"
   -> "The capital of France is Paris."
 ```
 
@@ -194,22 +195,65 @@ A sensible setup is **all three**, named clearly, and you tap whichever suits th
 question:
 
 * **Assist** — "turn on the lights", "what is the temperature". Instant.
-* **OpenAI** — anything, including the house. A few seconds.
+* **LLM** — anything, including the house. A few seconds.
 * **Hermes** *(or your own agent)* — when you need real tools: email, calendar,
   shell, long-running work. Slowest, most capable.
 
-### Home Assistant needs no extra code per agent
+### First: find out what your Home Assistant actually has
 
-`ha_assist_adapter.py` takes the conversation entity as configuration, so a second
-Home Assistant agent is just a second instance of the same script on another port:
+**Conversation entity IDs are not standard.** `conversation.home_assistant` is the
+only one every installation has. Everything else depends on which integrations you
+installed and what each config entry is named — an Ollama setup, a Google
+Generative AI setup and an Anthropic setup all produce different IDs, and a second
+config entry of the same integration gets a `_2` suffix. Copying an ID out of
+someone else's README will usually just fail.
+
+So look yours up first:
 
 ```bash
-# fast local Assist on :8649
+HA_URL=http://homeassistant.local:8123 ./list-ha-agents.sh
+```
+
+```
+Conversation agents in this Home Assistant:
+
+  conversation.home_assistant       Home Assistant  <- local intent matching: fastest, house only
+  conversation.my_local_ollama      My Local Ollama
+  conversation.claude_conversation  Claude Conversation
+
+Use one as HA_AGENT_ID, for example:
+
+  INSTANCE=llm ADAPTER_PORT=8650 \
+    HA_AGENT_ID=conversation.my_local_ollama \
+    ./install-ha.sh
+```
+
+It prompts for a token with hidden input, or takes `HA_TOKEN` from the environment.
+You can get the same list from **Developer Tools → Template**:
+
+```jinja
+{{ states.conversation | map(attribute='entity_id') | list }}
+```
+
+If you configure an ID that does not exist, the adapter does not just fail with
+Home Assistant's rather unhelpful `400 invalid agent ID` — it asks what *is*
+available and tells you, on the glasses:
+
+> Agent ollama_conversation does not exist here. Available: home_assistant,
+> openai_conversation.
+
+### Then: one instance per agent
+
+`ha_assist_adapter.py` takes the conversation entity as configuration, so a second
+Home Assistant agent is just another instance of the same script on another port:
+
+```bash
+# fast local Assist on :8649 — this ID is the same on every install
 HA_URL=http://homeassistant.local:8123 ./install-ha.sh
 
-# LLM-backed conversation entity on :8650, same script
-INSTANCE=openai ADAPTER_PORT=8650 \
-  HA_AGENT_ID=conversation.openai_conversation \
+# your LLM-backed entity on :8650, same script, ID from the step above
+INSTANCE=llm ADAPTER_PORT=8650 \
+  HA_AGENT_ID=<the-id-list-ha-agents.sh-showed-you> \
   HA_URL=http://homeassistant.local:8123 ./install-ha.sh
 ```
 
@@ -217,16 +261,7 @@ INSTANCE=openai ADAPTER_PORT=8650 \
 collide. Add each one in the app as its own agent, pointing at its own port. They
 all use the **same** Home Assistant long-lived token.
 
-List the conversation entities available to you in **Developer Tools → Template**:
-
-```jinja
-{{ states.conversation | map(attribute='entity_id') | list }}
-```
-
-Anything in that list is a valid `HA_AGENT_ID` — the OpenAI, Google and
-Extended OpenAI integrations all register one.
-
-> Routing house questions through an LLM entity spends API credits on every query
+> Routing house questions through a cloud LLM entity spends API credits on every query
 > and adds seconds of latency for something local Assist answers instantly. Keep
 > the fast local agent in your list even if you mostly use the LLM one.
 

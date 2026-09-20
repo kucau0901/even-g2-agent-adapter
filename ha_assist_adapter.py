@@ -20,6 +20,9 @@ Configuration (environment variables)
   ADAPTER_PORT   port to listen on               (default 8649)
   HA_URL         Home Assistant base URL         (default http://homeassistant.local:8123)
   HA_AGENT_ID    conversation entity to use      (default conversation.home_assistant)
+                 NOTE: only conversation.home_assistant exists on every install.
+                 Other IDs depend on your integrations and config entry names.
+                 Run ./list-ha-agents.sh to see yours.
   HA_LANGUAGE    language code                   (default en)
   CHAR_BUDGET    max characters in a reply       (default 350)
   CONTEXT_TTL    seconds a conversation_id is reused (default 300, 0 disables)
@@ -109,6 +112,40 @@ def remember_conversation_id(conversation_id):
     with _ctx_lock:
         _conversation["id"] = conversation_id
         _conversation["at"] = time.time()
+
+
+def ha_connection():
+    if HA_SCHEME == "https":
+        return http.client.HTTPSConnection(HA_HOST, HA_PORT, timeout=60,
+                                           context=ssl.create_default_context())
+    return http.client.HTTPConnection(HA_HOST, HA_PORT, timeout=60)
+
+
+def discover_agents(auth):
+    """Ask Home Assistant which conversation entities actually exist.
+
+    Conversation entity IDs are NOT standard across installations: they depend on
+    which integrations you have and what the config entries are named. The only
+    one every install has is conversation.home_assistant. So when the configured
+    agent is rejected, we look up the real list rather than guessing.
+    """
+    base = HA_PATH[:-len("/api/conversation/process")]
+    try:
+        conn = ha_connection()
+        conn.request("GET", base + "/api/states",
+                     headers={"Authorization": auth,
+                              "Host": "%s:%d" % (HA_HOST, HA_PORT)})
+        response = conn.getresponse()
+        data = response.read()
+        conn.close()
+        if response.status != 200:
+            return []
+        return sorted(
+            state["entity_id"] for state in json.loads(data)
+            if str(state.get("entity_id", "")).startswith("conversation.")
+        )
+    except Exception:                                  # noqa: BLE001
+        return []
 
 
 def extract_speech(envelope):
@@ -207,11 +244,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            if HA_SCHEME == "https":
-                conn = http.client.HTTPSConnection(HA_HOST, HA_PORT, timeout=60,
-                                                   context=ssl.create_default_context())
-            else:
-                conn = http.client.HTTPConnection(HA_HOST, HA_PORT, timeout=60)
+            conn = ha_connection()
             conn.request("POST", HA_PATH, body=encoded, headers={
                 "Host": "%s:%d" % (HA_HOST, HA_PORT),
                 "Authorization": auth,
@@ -230,6 +263,24 @@ class Handler(BaseHTTPRequestHandler):
 
         if status != 200:
             log("   HA returned %d: %r" % (status, data[:200]))
+
+            if status == 400 and b"agent" in data.lower():
+                available = discover_agents(auth)
+                if available:
+                    log("   HA_AGENT_ID=%r is not valid. This install has: %s"
+                        % (HA_AGENT_ID, ", ".join(available)))
+                    short = ", ".join(a.split(".", 1)[-1] for a in available)
+                    message = ("Agent %s does not exist here. Available: %s."
+                               % (HA_AGENT_ID.split(".", 1)[-1], short))
+                else:
+                    log("   HA_AGENT_ID=%r rejected and the entity list could not "
+                        "be read (token may lack access)." % HA_AGENT_ID)
+                    message = ("Agent %s does not exist in this Home Assistant."
+                               % HA_AGENT_ID.split(".", 1)[-1])
+                self._send(200, json.dumps(chat_completion(
+                    shorten(message, CHAR_BUDGET))).encode())
+                return
+
             hint = ("check the token in the app's Token field"
                     if status in (401, 403) else "check HA_AGENT_ID and HA_URL")
             self._send(200, json.dumps(chat_completion(
