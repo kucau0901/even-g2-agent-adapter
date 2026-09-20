@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
-# Install the Home Assistant Assist adapter as a macOS LaunchAgent.
+# Install a Home Assistant conversation adapter as a macOS LaunchAgent.
 #
+# Run it once per conversation agent you want on the glasses. INSTANCE just names
+# the service, so the instances do not collide:
+#
+#   # fast local Assist
 #   HA_URL=http://homeassistant.local:8123 ./install-ha.sh
+#
+#   # the same script again, pointed at an LLM-backed conversation entity
+#   INSTANCE=openai ADAPTER_PORT=8650 \
+#     HA_AGENT_ID=conversation.openai_conversation \
+#     HA_URL=http://homeassistant.local:8123 ./install-ha.sh
 set -euo pipefail
 
-LABEL="com.eveng2.ha-assist"
+INSTANCE="${INSTANCE:-assist}"
+LABEL="com.eveng2.ha-$INSTANCE"
 SHARE_DIR="$HOME/.local/share/even-g2-adapter"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
@@ -21,6 +31,7 @@ PYTHON="$(command -v python3 || true)"
 echo "==> installing to $SHARE_DIR"
 mkdir -p "$SHARE_DIR" "$HOME/Library/LaunchAgents"
 install -m 0755 "$(dirname "$0")/ha_assist_adapter.py" "$SHARE_DIR/ha_assist_adapter.py"
+echo "==> instance '$INSTANCE' on port $ADAPTER_PORT -> $HA_AGENT_ID"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 sleep 1
@@ -43,14 +54,14 @@ cat > "$PLIST" <<PLIST_EOF
         <key>HA_AGENT_ID</key><string>$HA_AGENT_ID</string>
         <key>HA_LANGUAGE</key><string>$HA_LANGUAGE</string>
         <key>CHAR_BUDGET</key><string>$CHAR_BUDGET</string>
-        <key>ADAPTER_LOG</key><string>$SHARE_DIR/ha-assist-adapter.log</string>
+        <key>ADAPTER_LOG</key><string>$SHARE_DIR/ha-$INSTANCE-adapter.log</string>
         <key>PYTHONUNBUFFERED</key><string>1</string>
     </dict>
     <key>WorkingDirectory</key><string>$SHARE_DIR</string>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>$SHARE_DIR/ha-assist.stdout.log</string>
-    <key>StandardErrorPath</key><string>$SHARE_DIR/ha-assist.stderr.log</string>
+    <key>StandardOutPath</key><string>$SHARE_DIR/ha-$INSTANCE.stdout.log</string>
+    <key>StandardErrorPath</key><string>$SHARE_DIR/ha-$INSTANCE.stderr.log</string>
 </dict>
 </plist>
 PLIST_EOF
@@ -65,12 +76,12 @@ if curl -fsS --max-time 5 "http://127.0.0.1:$ADAPTER_PORT/health" >/dev/null 2>&
   curl -s "http://127.0.0.1:$ADAPTER_PORT/health"; echo
   echo
   echo "In the Even Realities app, add a second agent:"
-  echo "  Name:  Assist"
+  echo "  Name:  $INSTANCE"
   echo "  URL:   http://<this-machine>:$ADAPTER_PORT/v1/chat/completions"
   echo "  Token: a Home Assistant LONG-LIVED ACCESS TOKEN"
   echo "         (HA -> your profile -> Security -> Long-lived access tokens)"
 else
   echo "service did not answer on :$ADAPTER_PORT" >&2
-  echo "check $SHARE_DIR/ha-assist.stderr.log" >&2
+  echo "check $SHARE_DIR/ha-$INSTANCE.stderr.log" >&2
   exit 1
 fi

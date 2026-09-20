@@ -9,7 +9,7 @@ first try: the app posts a slightly unusual request shape, and its glasses rende
 quietly truncates anything longer than about one screen. This adapter is a small,
 dependency-free proxy that sits in the middle and fixes both problems.
 
-It also ships a second adapter that exposes **Home Assistant Assist** as a glasses agent — see [below](#bonus-home-assistant-assist-as-a-second-agent).
+It also ships a second adapter for **Home Assistant**, so you can run a fast local Assist agent and a slower, smarter one side by side and tap between them — see [below](#running-several-agents-pick-your-speedcapability-tradeoff).
 
 ```
 G2 glasses ──BLE──> Even Realities app ──HTTP──> [ this adapter ] ──HTTP──> your agent
@@ -167,49 +167,74 @@ To edit the agent later you may need to dismiss an *"Even AI is active"* dialog 
 
 ---
 
-## Bonus: Home Assistant Assist as a second agent
+## Running several agents: pick your speed/capability tradeoff
 
-If you run [Home Assistant](https://www.home-assistant.io/), `ha_assist_adapter.py`
-exposes its **Assist** pipeline as a second glasses agent. Assist is local intent
-matching rather than LLM inference, so it answers smart-home questions in
-*milliseconds*:
+The Even Realities app holds a **list** of agents and you switch by tapping one.
+That is worth exploiting, because agent backends trade speed against capability
+very steeply. All figures below were measured end-to-end on real hardware.
 
-| Question | Assist | A typical LLM agent |
-|---|---|---|
-| "what is the temperature in the master bedroom" | **0.03 s** | ~13 s |
-| "turn on the study light" | **0.03 s** | ~3 s |
-| "is the front door locked" | **0.04 s** | ~3 s |
-| "what is the capital of France" | *cannot answer* | answers fine |
+| Agent | General knowledge | House state & control | Typical latency |
+|---|---|---|---|
+| Home Assistant **local Assist** (`conversation.home_assistant`) | ✗ | ✓ | **0.03 – 0.08 s** |
+| Home Assistant + **LLM conversation entity** (`conversation.openai_conversation`) | ✓ | ✓ | **2.7 – 5.8 s** |
+| A full **agentic backend** (Hermes, and similar tool-using agents) | ✓ | ✓ (via its own tools) | **3 – 19 s** |
 
-That last row is the whole point: Assist only knows your house. So run **both**
-adapters on different ports, add **both** as agents in the app, and tap to switch —
-Assist for the house, your LLM agent for everything else.
+Local Assist is intent matching, not inference — it answers "is the front door
+locked" in under a tenth of a second, but it genuinely cannot tell you the capital
+of France:
 
-Home Assistant's conversation API is not OpenAI-compatible (it is
-`POST /api/conversation/process` with its own envelope), which is why it needs its
-own adapter rather than just a different `UPSTREAM_URL`.
-
-### Install
-
-```bash
-HA_URL=http://homeassistant.local:8123 ./install-ha.sh
+```
+conversation.home_assistant   "what is the capital of France"
+  -> "Sorry, I am not aware of any device called capital of France"
+conversation.openai_conversation "what is the capital of France"
+  -> "The capital of France is Paris."
 ```
 
-Then add a second agent in the app:
+A sensible setup is **all three**, named clearly, and you tap whichever suits the
+question:
 
-| Field | Value |
-|---|---|
-| **Name** | `Assist` |
-| **URL** | `http://<adapter-host>:8649/v1/chat/completions` |
-| **Token** | a Home Assistant **long-lived access token** |
+* **Assist** — "turn on the lights", "what is the temperature". Instant.
+* **OpenAI** — anything, including the house. A few seconds.
+* **Hermes** *(or your own agent)* — when you need real tools: email, calendar,
+  shell, long-running work. Slowest, most capable.
 
-Create the token in Home Assistant: your profile (bottom-left) → **Security** →
-**Long-lived access tokens** → **Create Token**.
+### Home Assistant needs no extra code per agent
 
-### Configuration
+`ha_assist_adapter.py` takes the conversation entity as configuration, so a second
+Home Assistant agent is just a second instance of the same script on another port:
+
+```bash
+# fast local Assist on :8649
+HA_URL=http://homeassistant.local:8123 ./install-ha.sh
+
+# LLM-backed conversation entity on :8650, same script
+INSTANCE=openai ADAPTER_PORT=8650 \
+  HA_AGENT_ID=conversation.openai_conversation \
+  HA_URL=http://homeassistant.local:8123 ./install-ha.sh
+```
+
+`INSTANCE` names the launchd service and its log files so the instances do not
+collide. Add each one in the app as its own agent, pointing at its own port. They
+all use the **same** Home Assistant long-lived token.
+
+List the conversation entities available to you in **Developer Tools → Template**:
+
+```jinja
+{{ states.conversation | map(attribute='entity_id') | list }}
+```
+
+Anything in that list is a valid `HA_AGENT_ID` — the OpenAI, Google and
+Extended OpenAI integrations all register one.
+
+> Routing house questions through an LLM entity spends API credits on every query
+> and adds seconds of latency for something local Assist answers instantly. Keep
+> the fast local agent in your list even if you mostly use the LLM one.
+
+### Home Assistant adapter configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `INSTANCE` | `assist` | Names the launchd service and log files |
 | `ADAPTER_PORT` | `8649` | Port to listen on |
 | `HA_URL` | `http://homeassistant.local:8123` | Home Assistant base URL |
 | `HA_AGENT_ID` | `conversation.home_assistant` | Which conversation entity to use |
@@ -217,11 +242,21 @@ Create the token in Home Assistant: your profile (bottom-left) → **Security** 
 | `CHAR_BUDGET` | `350` | Hard cap on reply length |
 | `CONTEXT_TTL` | `300` | Seconds a `conversation_id` is reused for follow-ups (`0` disables) |
 
-Point `HA_AGENT_ID` at one of HA's LLM-backed conversation entities (for example
-`conversation.openai_conversation`) if you want general knowledge *and* house
-control from one agent — at the cost of Assist's speed. List yours with the
-template `{{ states.conversation | map(attribute='entity_id') | list }}` in
-**Developer Tools → Template**.
+Add each agent in the app with:
+
+| Field | Value |
+|---|---|
+| **Name** | `Assist`, `OpenAI`, … |
+| **URL** | `http://<adapter-host>:<port>/v1/chat/completions` |
+| **Token** | a Home Assistant **long-lived access token** |
+
+Create the token in Home Assistant: your profile (bottom-left) → **Security** →
+**Long-lived access tokens** → **Create Token**. The adapter forwards it straight
+through and never stores it.
+
+Home Assistant's conversation API is not OpenAI-compatible — it is
+`POST /api/conversation/process` with its own envelope — which is why it needs this
+adapter rather than just a different `UPSTREAM_URL` on the main one.
 
 ---
 
