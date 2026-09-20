@@ -1,0 +1,27 @@
+# Home Assistant Assist adapter (Linux, systemd user unit)
+#
+#   cp systemd/even-g2-ha-assist.service ~/.config/systemd/user/
+#   $EDITOR ~/.config/systemd/user/even-g2-ha-assist.service   # set HA_URL
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now even-g2-ha-assist
+
+[Unit]
+Description=Even Realities G2 Home Assistant Assist adapter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/even-g2-agent-adapter/ha_assist_adapter.py
+Environment=ADAPTER_PORT=8649
+Environment=HA_URL=http://homeassistant.local:8123
+Environment=HA_AGENT_ID=conversation.home_assistant
+Environment=HA_LANGUAGE=en
+Environment=CHAR_BUDGET=350
+Environment=ADAPTER_LOG=%h/.local/share/even-g2-adapter/ha-assist-adapter.log
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

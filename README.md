@@ -9,6 +9,8 @@ first try: the app posts a slightly unusual request shape, and its glasses rende
 quietly truncates anything longer than about one screen. This adapter is a small,
 dependency-free proxy that sits in the middle and fixes both problems.
 
+It also ships a second adapter that exposes **Home Assistant Assist** as a glasses agent — see [below](#bonus-home-assistant-assist-as-a-second-agent).
+
 ```
 G2 glasses ──BLE──> Even Realities app ──HTTP──> [ this adapter ] ──HTTP──> your agent
 ```
@@ -162,6 +164,64 @@ The adapter forwards the `Authorization` header upstream untouched, so your key
 lives only in the app — never in this repo or its config.
 
 To edit the agent later you may need to dismiss an *"Even AI is active"* dialog first.
+
+---
+
+## Bonus: Home Assistant Assist as a second agent
+
+If you run [Home Assistant](https://www.home-assistant.io/), `ha_assist_adapter.py`
+exposes its **Assist** pipeline as a second glasses agent. Assist is local intent
+matching rather than LLM inference, so it answers smart-home questions in
+*milliseconds*:
+
+| Question | Assist | A typical LLM agent |
+|---|---|---|
+| "what is the temperature in the master bedroom" | **0.03 s** | ~13 s |
+| "turn on the study light" | **0.03 s** | ~3 s |
+| "is the front door locked" | **0.04 s** | ~3 s |
+| "what is the capital of France" | *cannot answer* | answers fine |
+
+That last row is the whole point: Assist only knows your house. So run **both**
+adapters on different ports, add **both** as agents in the app, and tap to switch —
+Assist for the house, your LLM agent for everything else.
+
+Home Assistant's conversation API is not OpenAI-compatible (it is
+`POST /api/conversation/process` with its own envelope), which is why it needs its
+own adapter rather than just a different `UPSTREAM_URL`.
+
+### Install
+
+```bash
+HA_URL=http://homeassistant.local:8123 ./install-ha.sh
+```
+
+Then add a second agent in the app:
+
+| Field | Value |
+|---|---|
+| **Name** | `Assist` |
+| **URL** | `http://<adapter-host>:8649/v1/chat/completions` |
+| **Token** | a Home Assistant **long-lived access token** |
+
+Create the token in Home Assistant: your profile (bottom-left) → **Security** →
+**Long-lived access tokens** → **Create Token**.
+
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ADAPTER_PORT` | `8649` | Port to listen on |
+| `HA_URL` | `http://homeassistant.local:8123` | Home Assistant base URL |
+| `HA_AGENT_ID` | `conversation.home_assistant` | Which conversation entity to use |
+| `HA_LANGUAGE` | `en` | Language passed to Assist |
+| `CHAR_BUDGET` | `350` | Hard cap on reply length |
+| `CONTEXT_TTL` | `300` | Seconds a `conversation_id` is reused for follow-ups (`0` disables) |
+
+Point `HA_AGENT_ID` at one of HA's LLM-backed conversation entities (for example
+`conversation.openai_conversation`) if you want general knowledge *and* house
+control from one agent — at the cost of Assist's speed. List yours with the
+template `{{ states.conversation | map(attribute='entity_id') | list }}` in
+**Developer Tools → Template**.
 
 ---
 
